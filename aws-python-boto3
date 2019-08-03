@@ -1,0 +1,208 @@
+import boto3
+import time
+
+ec2 = boto3.resource('ec2')
+client = boto3.client('ec2')
+
+#Create VPC
+response = client.create_vpc(CidrBlock='172.16.0.0/16',InstanceTenancy='default')
+
+#Assign tags to VPC
+client.create_tags(Resources=[response['Vpc']['VpcId']],Tags=[{'Key': 'Name','Value': 'my-drupal-vpc',}])
+
+print('***** VPC Created with ID*********',response['Vpc']['VpcId'])
+vpc_id = response['Vpc']['VpcId']
+
+# Creating Internet Gateway for Drupal Web Instance subnets and attaching to VPC
+ig = ec2.create_internet_gateway()
+client.attach_internet_gateway(InternetGatewayId = ig.id, VpcId=vpc_id)
+
+routetable1_response = client.create_route_table(VpcId=vpc_id)
+
+def create_tag_for_route_table(route_table_number, route_table_name):
+    tag = client.create_tags(Resources=[route_table_number['RouteTable']['RouteTableId']],Tags=[{'Key': 'Name','Value': route_table_name}])
+    return tag
+
+create_tag_for_route_table(routetable1_response,'drupal-rt1')
+print('Route Table 1 Created - ',routetable1_response['RouteTable']['RouteTableId'])
+route_table1 = ec2.RouteTable(routetable1_response['RouteTable']['RouteTableId'])
+
+# Attach internet gateway to Routetable drupal-rt1 for web instances in subnet 1 and 3
+route_table1.create_route(DestinationCidrBlock='0.0.0.0/0', GatewayId=ig.id)
+
+# Attach internet gateway to Routetable drupal-rt1 for web instances in subnet 1 and 3
+route_table1.create_route(DestinationCidrBlock='0.0.0.0/0', GatewayId=ig.id)
+
+def create_subnet(cidr, vpc_id, azname):
+        subnet_response = client.create_subnet(CidrBlock=cidr, VpcId=vpc_id, AvailabilityZone=azname)
+        return subnet_response
+
+def create_tag(subnet_number,subnet_name):
+    client.create_tags(Resources=[subnet_number['Subnet']['SubnetId']], Tags=[{'Key': 'Name', 'Value': subnet_name}])
+
+def modify_subnet_attribute(subnet_name):
+    client.modify_subnet_attribute(MapPublicIpOnLaunch={'Value': True,}, SubnetId=subnet_name)
+
+#Creating first subnet
+subnet1 = create_subnet('172.16.1.0/24', vpc_id, 'us-east-1a')
+ec2_subnet1 = subnet1['Subnet']['SubnetId']
+create_tag(subnet1,'drupal-sb1-us-east-1a')
+modify_subnet_attribute(ec2_subnet1)
+print('Subnet 1 is Created with ID - ',ec2_subnet1)
+
+#Associating Route Table 1 to Subnet 1
+route_table1.associate_with_subnet(SubnetId=ec2_subnet1)
+print('Route table 1 associated with Subnet 1 -',ec2_subnet1)
+
+routetable2_response = client.create_route_table(VpcId=vpc_id)
+create_tag_for_route_table('drupal-rt2')
+print('Route Table 2 Created - ',routetable2_response['RouteTable']['RouteTableId'])
+route_table2 = ec2.RouteTable(routetable2_response['RouteTable']['RouteTableId'])
+
+# Creating second subnet
+subnet2 = create_subnet('172.16.2.0/24', vpc_id, 'us-east-1a')
+ec2_subnet2 = subnet2['Subnet']['SubnetId']
+create_tag(subnet2,'drupal-sb2-us-east-1a')
+print('Subnet 2 is Created with ID - ',ec2_subnet2)
+
+#Associating Route Table 2 to Subnet 2
+route_table2.associate_with_subnet(SubnetId=ec2_subnet2)
+print('Route table 2 associated with Subnet 2 -',ec2_subnet2)
+
+# Creating third subnet
+subnet3 = create_subnet('172.16.3.0/24', vpc_id, 'us-east-1b')
+ec2_subnet3 = subnet3['Subnet']['SubnetId']
+create_tag(subnet3,'drupal-sb3-us-east-1b')
+modify_subnet_attribute(ec2_subnet3)
+print('Subnet 3 is Created with ID - ',ec2_subnet3)
+
+#Associating Route Table 1 to Subnet 3
+route_table1.associate_with_subnet(SubnetId=ec2_subnet3)
+print('Route table 1 associated with Subnet 3 -',ec2_subnet3)
+
+# Creating fourth subnet
+subnet4 = create_subnet('172.16.4.0/24', vpc_id, 'us-east-1b')
+ec2_subnet4 = subnet4['Subnet']['SubnetId']
+create_tag(subnet4,'drupal-sb4-us-east-1b')
+print('Subnet 4 is Created with ID - ',ec2_subnet4)
+
+#Associating Route Table 2 to Subnet 4 
+route_table2.associate_with_subnet(SubnetId=ec2_subnet4)
+print('Route table 2 associated with Subnet 4 -',ec2_subnet4)
+
+def create_security_group(descript, group_name):
+    sg1_response = client.create_security_group(Description=descript,GroupName=group_name,VpcId=vpc_id)
+    return sg1_response
+
+def create_sg_tag(websg_or_elbsg,sg_group_name):
+    sg_tag_response = client.create_tags(Resources=[websg_or_elbsg['GroupId']],Tags=[{'Key': 'Name','Value': sg_group_name}])
+    return sg_tag_response
+
+#Create Security Group for Drupal instances which will accept traffic from ALB
+web_sg1 = create_security_group('Accept traffic from ALB', 'drupal-web-sg')
+sgId = web_sg1['GroupId']
+create_sg_tag(web_sg1,'drupal-web-sg')
+print('Created Security Group for Web Instances -',sgId)
+
+# Create Security for ALB which will accept traffic from Internet
+elb_sg1 = create_security_group('Accept traffic from Internet','drupal-elb-sg')
+elbsgId = elb_sg1['GroupId']
+create_sg_tag(elb_sg1,'drupal-elb-sg')
+print('Created Security Group for ELB -',elbsgId)
+
+elb1 = ec2.SecurityGroup(elbsgId)
+elb1.authorize_ingress(GroupId=elbsgId,IpPermissions=[{'IpProtocol': 'tcp', 'FromPort': 80, 'ToPort': 80, 'IpRanges': [{'CidrIp': '0.0.0.0/0'}]}])
+
+client.authorize_security_group_ingress(GroupId=sgId, IpPermissions=[{'IpProtocol': '-1','UserIdGroupPairs': [{'GroupId': elbsgId}]}])
+
+#Creating SSH key file for drupal instances
+# create a file to store the key locally                                 
+outfile = open('drupal-ec2-keypair.pem','w')                                                                                                      
+# call the boto ec2 function to create a key pair                        
+key_pair = ec2.create_key_pair(KeyName='drupal-ec2-keypair')             
+# capture the key and store it in a file                                 
+KeyPairOut = str(key_pair.key_material)                                    
+outfile.write(KeyPairOut)  
+
+# Creating instances for Drupal Infrastructure 
+user_data_script = """#!/bin/bash
+yum clean all
+yum update -y
+yum install httpd -y
+echo "Hello this is drupal website" >> /var/www/html/index.html
+systemctl start httpd
+systemctl restart httpd
+systemctl enable httpd"""
+
+def create_instances(subnet_name, instance_name):
+    web_instance = ec2.create_instances(ImageId='ami-011b3ccf1bd6db744',InstanceType='t2.micro',MinCount=1,MaxCount=1,KeyName='drupal-ec2-keypair',SubnetId=subnet_name,UserData=user_data_script,SecurityGroupIds=[sgId],TagSpecifications=[{'ResourceType': 'instance','Tags': [{'Key': 'Name','Value': instance_name}]}])
+    return web_instance
+
+web1_instance = create_instances(ec2_subnet1, 'drupal-web1')
+time.sleep(60)
+response1 = client.describe_instances()
+for reservation in response1["Reservations"]:
+     for instance in reservation["Instances"]:
+        ec2 = boto3.resource('ec2')
+        web1 = ec2.Instance(instance["InstanceId"])
+print('Launching web1 instance - ',web1.id)
+
+web2_instance = create_instances(ec2_subnet3, 'drupal-web2')
+time.sleep(60)
+response2 = client.describe_instances()
+for reservation in response2["Reservations"]:
+     for instance in reservation["Instances"]:
+        ec2 = boto3.resource('ec2')
+        web2 = ec2.Instance(instance["InstanceId"])
+print('Launching web2 instance - ',web2.id)
+
+# Application Load Balancer Code Starts here
+
+lb = boto3.client('elbv2')
+create_lb_response = lb.create_load_balancer(
+    Name='drupal-web-elb',
+    Subnets=[
+        ec2_subnet1, ec2_subnet3,
+    ],
+    SecurityGroups=[
+        elbsgId,
+    ],
+    Scheme='internet-facing',
+    Tags=[
+        {
+            'Key': 'Name',
+            'Value': 'drupal-web-elb'
+        },
+    ],
+    Type='application',
+    IpAddressType='ipv4'
+)
+
+lbId = create_lb_response['LoadBalancers'][0]['LoadBalancerArn']
+print('Successfully created load balancer - ',lbId)
+
+create_tg_response = lb.create_target_group(
+    Name='drupal-web-tg',
+    Protocol='HTTP',
+    Port=80,
+    TargetType='instance',
+    HealthCheckPath='/index.html',
+    VpcId=vpc_id
+)
+tgId = create_tg_response['TargetGroups'][0]['TargetGroupArn']
+print('Successfully created target group - ',tgId)
+#Create Listner for web elb
+listnerId = lb.create_listener(
+    LoadBalancerArn=lbId,
+    Protocol='HTTP',
+    Port=80,
+    DefaultActions=[
+        {
+            'Type': 'forward',
+            'TargetGroupArn': tgId
+        },
+    ]
+)
+
+# Register web instances with web-elb
+regis_targets = lb.register_targets(TargetGroupArn=tgId,Targets=[{'Id': web1.id,},{'Id': web2.id}])
