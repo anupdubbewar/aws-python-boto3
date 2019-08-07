@@ -1,5 +1,5 @@
 #!/usr/lib/env python3
-Autho: Anup Dubbewar(anup.dubbewar@gmail.com) 
+Author: Anup Dubbewar(anup.dubbewar@gmail.com) 
 
 import boto3
 import time
